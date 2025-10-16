@@ -167,6 +167,28 @@ ScreenManager:
                 Label:
                     text: 'Use AI summaries (requires OpenAI key)'
 
+            BoxLayout:
+                size_hint_y: None
+                height: '36dp'
+                spacing: 8
+                CheckBox:
+                    id: auto_commit
+                    active: root.auto_commit
+                    on_active: root.auto_commit = self.active
+                Label:
+                    text: 'Auto-commit READMEs to GitHub repos'
+
+            BoxLayout:
+                size_hint_y: None
+                height: '36dp'
+                spacing: 8
+                CheckBox:
+                    id: dry_run
+                    active: root.dry_run
+                    on_active: root.dry_run = self.active
+                Label:
+                    text: "Dry run (preview only, do not commit)"
+
 <LogsScreen>:
     name: 'logs'
     BoxLayout:
@@ -179,14 +201,19 @@ ScreenManager:
             Button:
                 text: 'Back'
                 on_release: app.root.current = 'home'
+            Button:
+                text: 'Clear Logs'
+                on_release: root.clear_logs()
         ScrollView:
             do_scroll_x: False
-            Label:
-                id: logs_label
+            TextInput:
+                id: logs_textinput
                 text: root.log_text
-                text_size: self.width, None
+                readonly: True
+                background_color: 0.1, 0.1, 0.1, 1
+                foreground_color: 0.9, 0.9, 0.9, 1
                 size_hint_y: None
-                height: self.texture_size[1]
+                height: max(self.minimum_height, self.parent.height)
 
 <OutputScreen>:
     name: 'output'
@@ -234,23 +261,37 @@ class HomeScreen(Screen):
         cfg = {
             "github_token": app.config_data.get("github_token"),
             "openai_key": app.config_data.get("openai_key"),
+            "use_ai": app.config_data.get("use_ai", False),
             "include_private": app.config_data.get("include_private", True),
             "portfolio_repo": app.config_data.get("portfolio_repo"),
             "output_dir": app.output_dir,
-            "auto_commit": False,
-            "dry_run": True
+            "auto_commit": app.config_data.get("auto_commit", False),
+            "dry_run": app.config_data.get("dry_run", True)
         }
 
         def cb(progress_tuple):
             stage, pct, message = progress_tuple
             self.log(message)
             self.update_progress(pct)
+            
+            # Update counts in real-time when repo completes
+            if stage in ["repo_complete", "skip_empty"]:
+                self.update_counts()
 
+        self.log("🚀 Starting repository scan...")
         run_full_scan(cfg, progress_callback=cb)
-        self.log("All repositories scanned.")
-        self.scanned_count = len(list(Path(app.output_dir).glob("*")))
-        self.output_count = len(list((Path(app.output_dir)/"summaries").glob("*.md")))
+        self.log("✅ All repositories scanned!")
+        self.update_counts()
         self.status_message = "Idle"
+    
+    @mainthread
+    def update_counts(self):
+        """Update the scanned and output counts in real-time."""
+        app = App.get_running_app()
+        summaries_dir = Path(app.output_dir) / "summaries"
+        if summaries_dir.exists():
+            self.output_count = len(list(summaries_dir.glob("*.md")))
+        self.scanned_count = self.output_count
 
     @mainthread
     def update_progress(self, value: int):
@@ -267,6 +308,8 @@ class SettingsScreen(Screen):
     portfolio_repo = StringProperty('jyasi-projects-index')
     include_private = BooleanProperty(True)
     use_ai = BooleanProperty(False)
+    auto_commit = BooleanProperty(False)
+    dry_run = BooleanProperty(True)
 
     def on_pre_enter(self):
         app = App.get_running_app()
@@ -276,6 +319,8 @@ class SettingsScreen(Screen):
         self.portfolio_repo = cfg.get('portfolio_repo', 'jyasi-projects-index')
         self.include_private = cfg.get('include_private', True)
         self.use_ai = cfg.get('use_ai', False)
+        self.auto_commit = cfg.get('auto_commit', False)
+        self.dry_run = cfg.get('dry_run', True)
 
     def save_config(self):
         app = App.get_running_app()
@@ -285,6 +330,8 @@ class SettingsScreen(Screen):
         cfg['portfolio_repo'] = self.portfolio_repo
         cfg['include_private'] = self.include_private
         cfg['use_ai'] = self.use_ai
+        cfg['auto_commit'] = self.auto_commit
+        cfg['dry_run'] = self.dry_run
         app.save_config()
         self.manager.current = 'home'
 
@@ -294,6 +341,9 @@ class LogsScreen(Screen):
     def append_log(self, message: str):
         ts = time.strftime('%Y-%m-%d %H:%M:%S')
         self.log_text += f"[{ts}] {message}\n"
+    
+    def clear_logs(self):
+        self.log_text = ''
 
 class OutputScreen(Screen):
     def on_pre_enter(self):
