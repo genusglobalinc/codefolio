@@ -594,31 +594,46 @@ USER ACTIONS:
 CODE SAMPLES:
 {chr(10).join('- ' + doc[:80] for doc in docstrings[:2]) if docstrings else '- No docs'}
 
-Generate a FACTUAL 2-3 sentence technical summary. NOT marketing copy. Just state:
-1. What this application is (type/purpose)
-2. What it does (main features/functionality)
-3. What it's built with (tech stack)
+Generate a technical summary (2-3 paragraphs MAX). 
 
-Write like a technical report, not a sales pitch. No words like "empowers", "seamlessly", "dynamic", "comprehensive". Just facts."""
+RULES:
+- Start with app type: "Flask Web Application", "FastAPI REST API", etc.
+- List capabilities: "Implements X, Y, Z"
+- State tech used: "Built with A, B. Can deploy on X, Y."
+- NO marketing words: empowers, seamlessly, enables, dynamic, comprehensive, robust, innovative
+- NO fluff: just facts
+- make sure to list out architecture overview, tech stack details, code quality metrics, development activity, and user experience intent indicated by any comments
+- Write like: "FastAPI REST API. Implements user auth and payment processing. Built with PostgreSQL, Stripe."
+
+FORBIDDEN WORDS: empowers, seamlessly, robust, comprehensive, dynamic, enables, innovative, cutting-edge, state-of-the-art, powerful, advanced"""
             
             response = client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
-                    {"role": "system", "content": "You are a technical documentation writer. Write factual, concise descriptions. No marketing language. No hype. Just state what the application is, what it does, and what it's built with. Write like you're reporting to another developer, not selling to a customer."},
+                    {"role": "system", "content": "You are writing a technical spec, not marketing copy. Be terse. State facts only. Format: '[Type]. Implements [features]. Built with [tech].' Never use marketing adjectives."},
                     {"role": "user", "content": context}
                 ],
-                max_tokens=150,
-                temperature=0.5
+                max_tokens=120,
+                temperature=0.3
             )
             
             ai_desc = response.choices[0].message.content.strip()
             if ai_desc and len(ai_desc) > 20:
                 enhanced_description = ai_desc
                 ai_used = True
+                print(f"✓ AI enhanced: {name}")
+            else:
+                print(f"⚠ AI response too short for {name}, using heuristic")
         except Exception as e:
             # Log error but fall back to heuristic description
-            print(f"OpenAI error for {name}: {str(e)}")
+            print(f"❌ OpenAI error for {name}: {str(e)}")
+            print(f"→ Using heuristic description for {name}")
             pass
+    else:
+        if openai_key and not OPENAI_AVAILABLE:
+            print(f"⚠ OpenAI not installed, using heuristic for {name}")
+        elif not openai_key:
+            print(f"ℹ No OpenAI key, using heuristic for {name}")
     
     # Build README sections
     sections = []
@@ -798,6 +813,9 @@ def run_full_scan(config, progress_callback=None):
     auto_commit = config.get("auto_commit", False)
     dry_run = config.get("dry_run", True)
     
+    # Track stats
+    stats = {"ai_enhanced": 0, "heuristic": 0, "errors": 0}
+    
     for idx, repo in enumerate(filtered_repos):
         repo_pct = int((idx+1)/total_repos*100)
         send_progress(progress_callback, "scan_repo", repo_pct, f"🔄 [{idx+1}/{total_repos}] Starting {repo.full_name}...")
@@ -818,10 +836,22 @@ def run_full_scan(config, progress_callback=None):
             # Check if using OpenAI
             use_ai_msg = ""
             if OPENAI_AVAILABLE and effective_openai_key:
-                use_ai_msg = " (with AI enhancement)"
-                send_progress(progress_callback, "ai_enhance", repo_pct, f"🤖 [{idx+1}/{total_repos}] Using OpenAI to enhance {repo.name} description...")
+                use_ai_msg = " (attempting AI enhancement)"
+                send_progress(progress_callback, "ai_enhance", repo_pct, f"🤖 [{idx+1}/{total_repos}] Calling OpenAI for {repo.name}...")
+            else:
+                send_progress(progress_callback, "heuristic", repo_pct, f"📊 [{idx+1}/{total_repos}] Using heuristic analysis for {repo.name}")
             
             readme_content = generate_portfolio_readme(meta, openai_key=effective_openai_key)
+            
+            # Track which method was used
+            if effective_openai_key and OPENAI_AVAILABLE:
+                # AI was attempted (may have succeeded or fallen back)
+                if "auto-generated with AI assistance" in readme_content:
+                    stats["ai_enhanced"] += 1
+                else:
+                    stats["heuristic"] += 1
+            else:
+                stats["heuristic"] += 1
             
             # Save local copy
             filename = output_dir / f"{repo.name.replace(' ','_')}.md"
@@ -855,7 +885,14 @@ def run_full_scan(config, progress_callback=None):
                          f"✅ [{idx+1}/{total_repos}] {repo.name}: {meta.get('file_count')} files, {meta.get('loc'):,} LOC{feature_info}{commit_status}")
         except Exception as e:
             send_progress(progress_callback, "error", repo_pct, f"❌ [{idx+1}/{total_repos}] Error with {repo.name}: {str(e)}")
+            stats["errors"] += 1
             continue
     
-    # Final summary
-    send_progress(progress_callback, "complete", 100, f"🎉 Scan complete! Processed {total_repos} repositories. Check {output_dir}")
+    # Final summary with breakdown
+    summary = f"🎉 Scan complete! Processed {total_repos} repositories"
+    if stats["ai_enhanced"] > 0 or stats["heuristic"] > 0:
+        summary += f" | AI: {stats['ai_enhanced']}, Heuristic: {stats['heuristic']}"
+    if stats["errors"] > 0:
+        summary += f", Errors: {stats['errors']}"
+    summary += f" | Output: {output_dir}"
+    send_progress(progress_callback, "complete", 100, summary)
